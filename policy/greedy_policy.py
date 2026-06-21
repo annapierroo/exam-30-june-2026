@@ -12,15 +12,15 @@ from game.rules import vincitore_presa
 
 @dataclass
 class GreedyPolicy:
-    """Myopic policy that wins with the cheapest card, otherwise discards."""
+    """Policy miope: prende con la carta meno costosa, altrimenti scarta."""
 
     name: str = "greedy"
 
     def action_probabilities(self, osservazione: Osservazione) -> dict[Carta, float]:
-        best_cards = self._best_cards(osservazione)
-        probability = 1.0 / len(best_cards)
+        carte_migliori = self._carte_migliori(osservazione)
+        probabilita = 1.0 / len(carte_migliori)
         return {
-            carta: probability if carta in best_cards else 0.0
+            carta: probabilita if carta in carte_migliori else 0.0
             for carta in osservazione.azioni_legali
         }
 
@@ -30,35 +30,35 @@ class GreedyPolicy:
         rng: random.Random,
         greedy: bool = False,
     ) -> Carta:
-        return rng.choice(self._best_cards(osservazione))
+        return rng.choice(self._carte_migliori(osservazione))
 
-    def _best_cards(self, osservazione: Osservazione) -> list[Carta]:
+    def _carte_migliori(self, osservazione: Osservazione) -> list[Carta]:
         azioni_legali = osservazione.azioni_legali
         if not azioni_legali:
             raise ValueError("No legal actions available")
 
-        winning_cards = [
-            carta for carta in azioni_legali if self._candidate_wins(osservazione, carta)
+        carte_che_prendono = [
+            carta for carta in azioni_legali if self._carta_prende(osservazione, carta)
         ]
-        candidates = winning_cards or list(azioni_legali)
-        best_cost = min(self._card_cost(osservazione, carta) for carta in candidates)
+        candidate = carte_che_prendono or list(azioni_legali)
+        costo_minimo = min(self._costo_carta(osservazione, carta) for carta in candidate)
         return [
             carta
-            for carta in candidates
-            if self._card_cost(osservazione, carta) == best_cost
+            for carta in candidate
+            if self._costo_carta(osservazione, carta) == costo_minimo
         ]
 
-    def _candidate_wins(self, osservazione: Osservazione, carta: Carta) -> bool:
-        candidate_trick = tuple(osservazione.carte_sul_campo) + (
+    def _carta_prende(self, osservazione: Osservazione, carta: Carta) -> bool:
+        presa_candidata = tuple(osservazione.carte_sul_campo) + (
             CartaGiocata(giocatore_id=osservazione.giocatore_id, carta=carta),
         )
-        winner = vincitore_presa(
-            candidate_trick,
+        vincitore = vincitore_presa(
+            presa_candidata,
             seme_briscola=osservazione.seme_briscola,
         )
-        return winner.giocatore_id == osservazione.giocatore_id
+        return vincitore.giocatore_id == osservazione.giocatore_id
 
-    def _card_cost(self, osservazione: Osservazione, carta: Carta) -> tuple[int, bool, int]:
+    def _costo_carta(self, osservazione: Osservazione, carta: Carta) -> tuple[int, bool, int]:
         return (
             carta.punti,
             carta.seme == osservazione.seme_briscola,
