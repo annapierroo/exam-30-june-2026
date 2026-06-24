@@ -3,8 +3,9 @@ from __future__ import annotations
 import random
 import unittest
 from dataclasses import dataclass, field
+import json
 
-from diagnostics.decision_log import record_decision_log
+from diagnostics.decision_log import decision_log_to_dict, record_decision_log
 from game.cards import Carta
 from game.observation import Osservazione
 from policy import RandomPolicy
@@ -99,6 +100,40 @@ class TestDecisionLog(unittest.TestCase):
                 set(record.azioni_legali),
             )
             self.assertEqual(record.giocatore_id, record.osservazione.giocatore_id)
+
+    def test_decision_log_to_dict_espone_mano_e_scelta(self):
+        # The JSON view is meant for manual inspection of hand and chosen card.
+        log = record_decision_log(
+            policies_by_player=random_policies(),
+            seed_ambiente=111,
+            seed_policy=121,
+            primo_giocatore_id=0,
+            greedy=True,
+            focus_giocatore_id=0,
+        )
+
+        report = decision_log_to_dict(log)
+        first = report["records"][0]
+
+        self.assertEqual(first["mano"], first["osservazione"]["mano"])
+        self.assertEqual(first["focus_giocatore_id"], 0)
+        self.assertEqual(first["focus_mano"], first["mano"])
+        self.assertEqual(first["seme_briscola"], first["osservazione"]["seme_briscola"])
+        self.assertEqual(
+            first["briscola_esposta"],
+            first["osservazione"]["briscola_esposta"],
+        )
+        self.assertEqual(
+            first["carte_sul_campo"],
+            first["osservazione"]["carte_sul_campo"],
+        )
+        self.assertEqual(first["azioni_legali"], first["mano"])
+        self.assertIn(first["azione"], first["mano"])
+        self.assertEqual(
+            set(first["action_probabilities"]),
+            {carta["id"] for carta in first["azioni_legali"]},
+        )
+        json.dumps(report)
 
     def test_greedy_viene_propagato_alle_policy(self):
         # The greedy flag must reach the recorded policies unchanged.

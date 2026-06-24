@@ -33,6 +33,8 @@ class DecisionRecord:
 
     step_index: int
     giocatore_id: int
+    focus_giocatore_id: int | None
+    focus_mano: tuple[Carta, ...]
     policy_name: str
     osservazione: Osservazione
     azioni_legali: tuple[Carta, ...]
@@ -55,6 +57,20 @@ class DecisionLog:
     squadra_vincitrice: str | None
 
 
+def decision_log_to_dict(log: DecisionLog) -> dict:
+    """Serialize a decision log into plain JSON-compatible values."""
+
+    return {
+        "seed_ambiente": log.seed_ambiente,
+        "seed_policy": log.seed_policy,
+        "primo_giocatore_id": log.primo_giocatore_id,
+        "greedy": log.greedy,
+        "punteggi_finali": dict(log.punteggi_finali),
+        "squadra_vincitrice": log.squadra_vincitrice,
+        "records": [_record_to_dict(record) for record in log.records],
+    }
+
+
 def record_decision_log(
     *,
     policies_by_player: dict[int, Policy],
@@ -62,11 +78,14 @@ def record_decision_log(
     seed_policy: int,
     primo_giocatore_id: int,
     greedy: bool,
+    focus_giocatore_id: int | None = None,
 ) -> DecisionLog:
     """Play one game and record only legal observations plus public outcomes."""
 
     _valida_policies_by_player(policies_by_player)
     valida_giocatore_id(primo_giocatore_id)
+    if focus_giocatore_id is not None:
+        valida_giocatore_id(focus_giocatore_id)
 
     ambiente = Ambiente(
         seed=seed_ambiente,
@@ -88,11 +107,18 @@ def record_decision_log(
         if azione not in azioni_legali:
             raise ValueError("La policy ha scelto una carta non legale")
 
+        focus_mano = (
+            tuple(ambiente.mani[focus_giocatore_id])
+            if focus_giocatore_id is not None
+            else ()
+        )
         esito = ambiente.gioca(azione)
         records.append(
             DecisionRecord(
                 step_index=step_index,
                 giocatore_id=giocatore_id,
+                focus_giocatore_id=focus_giocatore_id,
+                focus_mano=focus_mano,
                 policy_name=policy.name,
                 osservazione=osservazione,
                 azioni_legali=azioni_legali,
@@ -128,6 +154,126 @@ def _decision_outcome(esito: EsitoMossa) -> DecisionOutcome:
         punteggi=dict(esito.punteggi),
         eventi_pubblici=esito.eventi_pubblici,
     )
+
+
+def _record_to_dict(record: DecisionRecord) -> dict:
+    osservazione = record.osservazione
+    return {
+        "step_index": record.step_index,
+        "giocatore_id": record.giocatore_id,
+        "focus_giocatore_id": record.focus_giocatore_id,
+        "focus_mano": [_card_to_dict(carta) for carta in record.focus_mano],
+        "policy_name": record.policy_name,
+        "greedy": record.greedy,
+        "mano": [_card_to_dict(carta) for carta in osservazione.mano],
+        "seme_briscola": osservazione.seme_briscola,
+        "briscola_esposta": _card_to_dict(osservazione.briscola_esposta),
+        "carte_sul_campo": [
+            _played_card_to_dict(giocata)
+            for giocata in osservazione.carte_sul_campo
+        ],
+        "azioni_legali": [_card_to_dict(carta) for carta in record.azioni_legali],
+        "azione": _card_to_dict(record.azione),
+        "action_probabilities": {
+            carta.id: probability
+            for carta, probability in record.action_probabilities.items()
+        },
+        "osservazione": _observation_to_dict(osservazione),
+        "outcome": _outcome_to_dict(record.outcome),
+    }
+
+
+def _observation_to_dict(osservazione: Osservazione) -> dict:
+    return {
+        "giocatore_id": osservazione.giocatore_id,
+        "compagno_id": osservazione.compagno_id,
+        "avversari": list(osservazione.avversari),
+        "squadra": osservazione.squadra,
+        "squadra_avversaria": osservazione.squadra_avversaria,
+        "punteggio_squadra": osservazione.punteggio_squadra,
+        "punteggio_avversari": osservazione.punteggio_avversari,
+        "mano": [_card_to_dict(carta) for carta in osservazione.mano],
+        "mano_compagno_visibile": osservazione.mano_compagno_visibile,
+        "mano_compagno": [
+            _card_to_dict(carta) for carta in osservazione.mano_compagno
+        ],
+        "seme_briscola": osservazione.seme_briscola,
+        "briscola_esposta": _card_to_dict(osservazione.briscola_esposta),
+        "proprietario_briscola_esposta": (
+            osservazione.proprietario_briscola_esposta
+        ),
+        "carte_sul_campo": [
+            _played_card_to_dict(giocata)
+            for giocata in osservazione.carte_sul_campo
+        ],
+        "carte_giocate": [
+            _played_card_to_dict(giocata)
+            for giocata in osservazione.carte_giocate
+        ],
+        "vincitori_prese": list(osservazione.vincitori_prese),
+        "primo_giocatore_presa": osservazione.primo_giocatore_presa,
+        "giocatore_corrente": osservazione.giocatore_corrente,
+        "carte_nel_mazzo": osservazione.carte_nel_mazzo,
+        "indice_presa": osservazione.indice_presa,
+        "posizione_nella_presa": osservazione.posizione_nella_presa,
+    }
+
+
+def _outcome_to_dict(outcome: DecisionOutcome) -> dict:
+    return {
+        "partita_finita": outcome.partita_finita,
+        "presa_completata": outcome.presa_completata,
+        "carte_presa_completata": [
+            _played_card_to_dict(giocata)
+            for giocata in outcome.carte_presa_completata
+        ],
+        "vincitore_presa": outcome.vincitore_presa,
+        "punti_presa": outcome.punti_presa,
+        "carte_pescate": [
+            _drawn_card_to_dict(carta_pescata)
+            for carta_pescata in outcome.carte_pescate
+        ],
+        "prossimo_giocatore": outcome.prossimo_giocatore,
+        "punteggi": dict(outcome.punteggi),
+        "eventi_pubblici": [
+            _public_event_to_dict(evento) for evento in outcome.eventi_pubblici
+        ],
+    }
+
+
+def _card_to_dict(carta: Carta | None) -> dict | None:
+    if carta is None:
+        return None
+    return {
+        "id": carta.id,
+        "seme": carta.seme,
+        "rango": carta.rango,
+        "punti": carta.punti,
+        "forza": carta.forza,
+    }
+
+
+def _played_card_to_dict(giocata: CartaGiocata) -> dict:
+    return {
+        "giocatore_id": giocata.giocatore_id,
+        "carta": _card_to_dict(giocata.carta),
+    }
+
+
+def _drawn_card_to_dict(carta_pescata: CartaPescata) -> dict:
+    return {
+        "giocatore_id": carta_pescata.giocatore_id,
+        "carta_visibile": _card_to_dict(carta_pescata.carta_visibile),
+    }
+
+
+def _public_event_to_dict(evento: EventoPubblico) -> dict:
+    return {
+        "tipo": evento.tipo,
+        "giocatore_id": evento.giocatore_id,
+        "carta": _card_to_dict(evento.carta),
+        "punti": evento.punti,
+    }
 
 
 def _valida_policies_by_player(policies_by_player: dict[int, Policy]) -> None:

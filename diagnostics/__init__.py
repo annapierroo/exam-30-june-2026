@@ -1,6 +1,12 @@
 """Diagnostics utilities for inspecting Briscola policy decisions."""
 
-from .decision_log import DecisionLog, DecisionOutcome, DecisionRecord, record_decision_log
+from .decision_log import (
+    DecisionLog,
+    DecisionOutcome,
+    DecisionRecord,
+    decision_log_to_dict,
+    record_decision_log,
+)
 from .views import (
     records_by_trick_position,
     records_chosen_with_probability_below,
@@ -15,6 +21,7 @@ __all__ = [
     "DecisionLog",
     "DecisionOutcome",
     "DecisionRecord",
+    "decision_log_to_dict",
     "record_decision_log",
     "records_by_trick_position",
     "records_chosen_with_probability_below",
