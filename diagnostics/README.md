@@ -22,6 +22,26 @@ Utilities for inspecting policy decisions from legal observations.
 
 The log stores public outcomes and legal observations only.
 
+Training can write one post-training decision trace with:
+
+```bash
+python scripts/train.py ... --diagnostics-output experiments/results/decisions.json
+```
+
+Print it with:
+
+```bash
+python scripts/show_diagnostics.py experiments/results/decisions.json --show-probs
+```
+
+Or inspect it visually by opening:
+
+```text
+diagnostics_ui/visual_diagnostics.html
+```
+
+Then load `experiments/results/decisions.json` with the file picker.
+
 ## Views
 
 `views.py` provides filters for:
