@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
-"""Runner for the agreed Briscola RL training protocol v1.
+"""CLI orchestrator for the agreed Briscola RL training protocol v2.
 
-It codifies the experimental grid so runs are repeatable without committing
-generated models or logs.
+Named phases define controlled experimental grids. Each configuration is
+translated into the existing train and evaluation entrypoints, with a stable
+local output path. The runner does not implement training or evaluation logic,
+and it never commits generated models or logs.
 """
 
 from __future__ import annotations
@@ -17,17 +19,39 @@ from typing import Iterable
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    # Allow `python scripts/run_training_protocol_v2.py` without installation.
+    sys.path.insert(0, str(PROJECT_ROOT))
 
+from policy.feature_sets import FEATURE_SET_NAMES
+
+# Historical exploratory axes are retained so earlier protocol phases remain
+# reproducible. They are not the defaults of the consolidated v2 phases.
 MAIN_LEARNING_RATES = ("0.003", "0.01", "0.03", "0.1")
-STRESS_LEARNING_RATES = ("0.1", "0.3", "0.9")
+# Stress values start above the main grid, which already includes 0.1.
+STRESS_LEARNING_RATES = ("0.3", "0.5", "0.9")
+# Kept separate to reproduce the clipping probe already recorded in the notes.
+CLIPPING_PROBE_LEARNING_RATES = ("0.1", "0.3", "0.9")
 CLIPPING_PROBE_NORMS: tuple[str | None, ...] = (None, "1.0", "5.0")
 BOOTSTRAP_UPDATES = (0, 30)
 MATCHUP_SAMPLINGS = ("per_episode", "per_rotation_block")
-FEATURE_SETS = ("base", "new_interactions")
+
+# Feature-set names come from the production selector so the runner cannot
+# accept a value that scripts/train.py would reject.
+FEATURE_SETS = tuple(sorted(FEATURE_SET_NAMES))
+DEFAULT_FEATURE_SETS = ("base",)
+LINEAR_FEATURE_COMPARISON_SETS = ("base_aligned", "new_aligned")
 POLICY_TYPES = ("linear", "neural")
 DEFAULT_POLICY_TYPES = ("linear",)
 DEFAULT_HIDDEN_SIZES = (64,)
 
+# Current fixed condition for representation ablations. CLI options can
+# override one axis deliberately, but the defaults remain explicit here.
+CONSOLIDATED_LEARNING_RATES = ("0.9",)
+CONSOLIDATED_BOOTSTRAP_UPDATES = (30,)
+CONSOLIDATED_MATCHUP_SAMPLINGS = ("per_rotation_block",)
+
+# Reward weights are named to keep reward-grid commands readable.
 REWARD_PRESETS = {
     "win_heavy": ("1.0", "0.1"),
     "current_baseline": ("1.0", "0.2"),
@@ -38,6 +62,8 @@ REWARD_PRESETS = {
 
 @dataclass(frozen=True)
 class RunConfig:
+    """One fully specified training and evaluation run."""
+
     phase: str
     policy_type: str
     seed: int
@@ -58,6 +84,34 @@ class RunConfig:
     max_update_norm: str | None = None
     hidden_size: int | None = None
     neural_learned_baseline: bool = True
+
+
+@dataclass(frozen=True)
+class FeatureComparisonPhase:
+    """Fixed budget for one controlled linear representation comparison."""
+
+    feature_sets: tuple[str, ...]
+    batch_size: int
+    updates: int
+    evaluation_games: int
+
+
+# These phases keep the common atomic representation fixed. They compare only
+# the historical and new engineered interaction families.
+FEATURE_COMPARISON_PHASES = {
+    "feature_linear_light": FeatureComparisonPhase(
+        feature_sets=LINEAR_FEATURE_COMPARISON_SETS,
+        batch_size=180,
+        updates=300,
+        evaluation_games=500,
+    ),
+    "feature_linear_intensive": FeatureComparisonPhase(
+        feature_sets=LINEAR_FEATURE_COMPARISON_SETS,
+        batch_size=300,
+        updates=500,
+        evaluation_games=1000,
+    ),
+}
 
 
 def value_token(value: str | int) -> str:
@@ -146,6 +200,8 @@ def train_command(config: RunConfig, python_bin: str) -> list[str]:
         config.reward_lambda_margin,
         "--bootstrap-updates",
         str(config.bootstrap_updates),
+        # The v2 protocol preserves the initial learner snapshot. It stays
+        # fixed rather than becoming another experimental axis in this runner.
         "--keep-initial-pool",
         "--matchup-sampling",
         config.matchup_sampling,
@@ -205,7 +261,7 @@ def cartesian(
     feature_sets: Iterable[str] = ("base",),
     max_update_norms: Iterable[str | None] = (None,),
 ) -> list[RunConfig]:
-    """Build a deterministic list of run configs."""
+    """Expand explicitly selected axes in a deterministic, inspectable order."""
 
     configs: list[RunConfig] = []
     for seed in seeds:
@@ -328,10 +384,52 @@ def build_configs(args: argparse.Namespace) -> list[RunConfig]:
     """Build run configs for the requested protocol phase."""
 
     seeds = tuple(args.seed or [5000])
-    feature_sets = tuple(args.feature_set or ("base",))
+    selected_feature_sets = tuple(args.feature_set or DEFAULT_FEATURE_SETS)
     policy_types = selected_policy_types(args)
     hidden_sizes = selected_hidden_sizes(args)
 
+    feature_phase = FEATURE_COMPARISON_PHASES.get(args.phase)
+    if feature_phase is not None:
+        if args.policy_type and set(args.policy_type) != {"linear"}:
+            raise SystemExit(
+                f"{args.phase} confronta soltanto policy_type=linear",
+            )
+        requested_feature_sets = tuple(args.feature_set or feature_phase.feature_sets)
+        unsupported_feature_sets = set(requested_feature_sets) - set(
+            feature_phase.feature_sets,
+        )
+        if unsupported_feature_sets:
+            raise SystemExit(
+                f"{args.phase} supporta soltanto feature set "
+                f"{sorted(feature_phase.feature_sets)}",
+            )
+        return cartesian(
+            phase=args.phase,
+            seeds=seeds,
+            policy_types=("linear",),
+            hidden_sizes=(),
+            batch_size=feature_phase.batch_size,
+            updates=feature_phase.updates,
+            evaluation_games=(
+                None if args.skip_evaluation else feature_phase.evaluation_games
+            ),
+            learning_rates=tuple(args.learning_rate or CONSOLIDATED_LEARNING_RATES),
+            bootstrap_updates=tuple(
+                args.bootstrap_updates or CONSOLIDATED_BOOTSTRAP_UPDATES
+            ),
+            matchup_samplings=tuple(
+                args.matchup_sampling or CONSOLIDATED_MATCHUP_SAMPLINGS
+            ),
+            reward_mode="combined_terminal",
+            reward_presets=("current_baseline",),
+            feature_sets=requested_feature_sets,
+            max_update_norms=selected_max_update_norms(
+                args.max_update_norm,
+                (None,),
+            ),
+        )
+
+    # Historical phases below remain available to replay earlier experiments.
     if args.phase == "stress_lr":
         return cartesian(
             phase=args.phase,
@@ -350,7 +448,7 @@ def build_configs(args: argparse.Namespace) -> list[RunConfig]:
             matchup_samplings=("per_episode",),
             reward_mode="combined_terminal",
             reward_presets=("current_baseline",),
-            feature_sets=feature_sets,
+            feature_sets=selected_feature_sets,
             max_update_norms=selected_max_update_norms(
                 args.max_update_norm,
                 (None,),
@@ -366,12 +464,14 @@ def build_configs(args: argparse.Namespace) -> list[RunConfig]:
             batch_size=180,
             updates=300,
             evaluation_games=None if args.skip_evaluation else 500,
-            learning_rates=tuple(args.learning_rate or STRESS_LEARNING_RATES),
+            learning_rates=tuple(
+                args.learning_rate or CLIPPING_PROBE_LEARNING_RATES
+            ),
             bootstrap_updates=tuple(args.bootstrap_updates or (0,)),
             matchup_samplings=tuple(args.matchup_sampling or ("per_episode",)),
             reward_mode="combined_terminal",
             reward_presets=("current_baseline",),
-            feature_sets=feature_sets,
+            feature_sets=selected_feature_sets,
             max_update_norms=selected_max_update_norms(
                 args.max_update_norm,
                 CLIPPING_PROBE_NORMS,
@@ -394,7 +494,7 @@ def build_configs(args: argparse.Namespace) -> list[RunConfig]:
             reward_presets=tuple(
                 args.reward_preset or ("current_baseline", "balanced")
             ),
-            feature_sets=feature_sets,
+            feature_sets=selected_feature_sets,
             max_update_norms=selected_max_update_norms(
                 args.max_update_norm,
                 (None,),
@@ -415,7 +515,7 @@ def build_configs(args: argparse.Namespace) -> list[RunConfig]:
             matchup_samplings=tuple(args.matchup_sampling or MATCHUP_SAMPLINGS),
             reward_mode="combined_terminal",
             reward_presets=("current_baseline",),
-            feature_sets=feature_sets,
+            feature_sets=selected_feature_sets,
             max_update_norms=selected_max_update_norms(
                 args.max_update_norm,
                 (None,),
@@ -459,7 +559,7 @@ def build_configs(args: argparse.Namespace) -> list[RunConfig]:
             matchup_samplings=matchup_samplings,
             reward_mode="combined_terminal",
             reward_presets=("current_baseline",),
-            feature_sets=feature_sets,
+            feature_sets=selected_feature_sets,
             max_update_norms=selected_max_update_norms(
                 args.max_update_norm,
                 (None,),
@@ -482,7 +582,7 @@ def build_configs(args: argparse.Namespace) -> list[RunConfig]:
             matchup_samplings=matchup_samplings,
             reward_mode="combined_terminal",
             reward_presets=reward_presets,
-            feature_sets=feature_sets,
+            feature_sets=selected_feature_sets,
             max_update_norms=selected_max_update_norms(
                 args.max_update_norm,
                 (None,),
@@ -504,7 +604,7 @@ def build_configs(args: argparse.Namespace) -> list[RunConfig]:
             matchup_samplings=matchup_samplings,
             reward_mode="dense_presa",
             reward_presets=dense_presets,
-            feature_sets=feature_sets,
+            feature_sets=selected_feature_sets,
             max_update_norms=selected_max_update_norms(
                 args.max_update_norm,
                 (None,),
@@ -521,7 +621,7 @@ def maybe_run(
     force: bool,
     output_path: Path,
 ) -> None:
-    """Print or execute one command, skipping completed outputs by default."""
+    """Print or execute one command, preserving completed outputs by default."""
 
     print(shlex.join(command))
     if not execute:
@@ -534,6 +634,7 @@ def maybe_run(
 
 
 def main() -> None:
+    # Dry runs and real runs share the same parsed configuration and grid.
     parser = argparse.ArgumentParser(
         description="Run the local Briscola RL experimental protocol.",
     )
@@ -544,8 +645,10 @@ def main() -> None:
             "stress_lr",
             "clipping_probe",
             "dense_presa_probe",
+            "feature_linear_light",
             "pilot_combined",
             "series_combined",
+            "feature_linear_intensive",
             "reward_combined",
             "dense_presa",
         ),
